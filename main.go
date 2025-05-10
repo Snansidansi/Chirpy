@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync/atomic"
@@ -21,6 +22,7 @@ func main() {
 	serveMux.HandleFunc("GET /api/healthz", handleHealth)
 	serveMux.HandleFunc("GET /api/metrics", apiCfg.handleGetMetrics)
 	serveMux.HandleFunc("POST /api/reset", apiCfg.handleResetMetrics)
+	serveMux.HandleFunc("POST /api/validate_chirp", handleValidateChrip)
 
 	httpServer := http.Server{
 		Handler: serveMux,
@@ -63,4 +65,29 @@ func (cfg *apiConfig) handleResetMetrics(w http.ResponseWriter, _ *http.Request)
 	w.WriteHeader(200)
 	w.Header().Add("Content-Type", "text/plain; charset=utf-8")
 	w.Write([]byte("Successfuly reset request counter."))
+}
+
+func handleValidateChrip(w http.ResponseWriter, r *http.Request) {
+	type chirp struct {
+		Body string `json:"body"`
+	}
+
+	w.Header().Add("Content-Type", "application/json")
+
+	decoder := json.NewDecoder(r.Body)
+	rChirp := chirp{}
+	if err := decoder.Decode(&rChirp); err != nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error": "Something went wrong"}`))
+		return
+	}
+
+	if len(rChirp.Body) > 140 {
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error": "Chirp is too long"}`))
+		return
+	}
+
+	w.WriteHeader(200)
+	w.Write([]byte(`{"valid": true}`))
 }
