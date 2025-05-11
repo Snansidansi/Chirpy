@@ -1,6 +1,7 @@
 package main
 
 import (
+	"compress/gzip"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -118,6 +119,13 @@ func handleValidateChrip(w http.ResponseWriter, r *http.Request) {
 		rChirp.Body = re.ReplaceAllString(rChirp.Body, "****")
 	}
 
+	w.Header().Add("Content-Encoding", "gzip")
 	w.WriteHeader(200)
-	w.Write(fmt.Appendf(nil, `{"cleaned_body": "%s"}`, rChirp.Body))
+
+	gzw := gzip.NewWriter(w)
+	defer gzw.Close()
+	_, err := gzw.Write(fmt.Appendf(nil, `{"cleaned_body": "%s"}`, rChirp.Body))
+	if err != nil {
+		fmt.Println(err)
+	}
 }
