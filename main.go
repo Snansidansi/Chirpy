@@ -1,10 +1,18 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
+	"os"
+	"regexp"
 	"sync/atomic"
+
+	"github.com/Snansidansi/Chirpy/internal/database"
+	"github.com/joho/godotenv"
+	_ "github.com/lib/pq"
 )
 
 func main() {
@@ -12,6 +20,17 @@ func main() {
 		filePathRoot = "."
 		port         = "8080"
 	)
+
+	godotenv.Load()
+	dbURL := os.Getenv("DB_URL")
+
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	dbQueries := database.New(db)
+	_ = dbQueries
 
 	apiCfg := apiConfig{
 		fileserverHits: atomic.Int32{},
@@ -22,7 +41,7 @@ func main() {
 	serveMux.HandleFunc("GET /admin/healthz", handleHealth)
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.handleGetMetrics)
 	serveMux.HandleFunc("POST /admin/reset", apiCfg.handleResetMetrics)
-	serveMux.HandleFunc("POST /api/validate_chirp", handleValidateChrip)
+	serveMux.Handle("POST /api/validate_chirp", apiCfg.middlewareMetricsInc(http.HandlerFunc(handleValidateChrip)))
 
 	httpServer := http.Server{
 		Handler: serveMux,
@@ -62,7 +81,7 @@ func (cfg *apiConfig) handleGetMetrics(w http.ResponseWriter, r *http.Request) {
 				  </body>
 				</html>`
 
-	w.Write([]byte(fmt.Sprintf(message, cfg.fileserverHits.Load())))
+	w.Write(fmt.Appendf(nil, message, cfg.fileserverHits.Load()))
 }
 
 func (cfg *apiConfig) handleResetMetrics(w http.ResponseWriter, _ *http.Request) {
@@ -94,6 +113,11 @@ func handleValidateChrip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	for _, word := range []string{"kerfuffle", "sharbert", "fornax"} {
+		re := regexp.MustCompile(fmt.Sprintf(`(?i)%s`, word))
+		rChirp.Body = re.ReplaceAllString(rChirp.Body, "****")
+	}
+
 	w.WriteHeader(200)
-	w.Write([]byte(`{"valid": true}`))
+	w.Write(fmt.Appendf(nil, `{"cleaned_body": "%s"}`, rChirp.Body))
 }
