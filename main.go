@@ -2,6 +2,7 @@ package main
 
 import (
 	"compress/gzip"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -10,8 +11,10 @@ import (
 	"os"
 	"regexp"
 	"sync/atomic"
+	"time"
 
 	"github.com/Snansidansi/Chirpy/internal/database"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
@@ -30,11 +33,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	dbQueries := database.New(db)
-	_ = dbQueries
-
 	apiCfg := apiConfig{
 		fileserverHits: atomic.Int32{},
+		db:             database.New(db),
+		platform:       os.Getenv("PLATFORM"),
 	}
 
 	serveMux := http.NewServeMux()
@@ -42,7 +44,9 @@ func main() {
 	serveMux.HandleFunc("GET /admin/healthz", handleHealth)
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.handleGetMetrics)
 	serveMux.HandleFunc("POST /admin/reset", apiCfg.handleResetMetrics)
-	serveMux.Handle("POST /api/validate_chirp", apiCfg.middlewareMetricsInc(http.HandlerFunc(handleValidateChrip)))
+	serveMux.HandleFunc("POST /api/validate_chirp", handleValidateChrip)
+	serveMux.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
+	serveMux.HandleFunc("DELETE /api/users", apiCfg.handlerDeleteAllUsers)
 
 	httpServer := http.Server{
 		Handler: serveMux,
@@ -60,6 +64,8 @@ func handleHealth(responseWriter http.ResponseWriter, _ *http.Request) {
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	db             *database.Queries
+	platform       string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -86,7 +92,17 @@ func (cfg *apiConfig) handleGetMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handleResetMetrics(w http.ResponseWriter, _ *http.Request) {
+	if cfg.platform != "dev" {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
 	cfg.fileserverHits.Swap(0)
+
+	err := cfg.db.DeleteAllUsers(context.Background())
+	if err != nil {
+		respondWithError(w, 500, err)
+	}
 
 	w.WriteHeader(200)
 	w.Header().Add("Content-Type", "text/plain; charset=utf-8")
@@ -128,4 +144,74 @@ func handleValidateChrip(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		fmt.Println(err)
 	}
+}
+
+func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
+	type userParameters struct {
+		Email string `json:"email"`
+	}
+
+	var userParams userParameters
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&userParams); err != nil {
+		respondWithError(w, 400, err)
+		return
+	}
+
+	createdUser, err := cfg.db.CreateUser(context.Background(), database.CreateUserParams{
+		ID:        uuid.New(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Email:     userParams.Email,
+	})
+	tempUser := struct {
+		Id         uuid.UUID `json:"id"`
+		Created_at time.Time `json:"created_at"`
+		Updated_at time.Time `json:"updated_at"`
+		Email      string    `json:"email"`
+	}{
+		Id:         createdUser.ID,
+		Created_at: createdUser.CreatedAt,
+		Updated_at: createdUser.UpdatedAt,
+		Email:      createdUser.Email,
+	}
+	if err != nil {
+		respondWithError(w, 400, err)
+		return
+	}
+
+	respondJson(w, 201, tempUser)
+}
+
+func respondWithError(w http.ResponseWriter, httpCode int, err error) {
+	type errorResponse struct {
+		Message string `json:"message"`
+	}
+	errResp := errorResponse{
+		Message: fmt.Sprint(err),
+	}
+
+	respondJson(w, httpCode, errResp)
+}
+
+func respondJson(w http.ResponseWriter, httpCode int, body any) {
+	w.Header().Add("Content-Type", "application/json")
+
+	data, err := json.Marshal(body)
+	if err != nil {
+		w.WriteHeader(500)
+		return
+	}
+
+	w.WriteHeader(httpCode)
+	w.Write(data)
+}
+
+func (cfg *apiConfig) handlerDeleteAllUsers(w http.ResponseWriter, r *http.Request) {
+	err := cfg.db.DeleteAllUsers(context.Background())
+	if err != nil {
+		respondWithError(w, 500, err)
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
