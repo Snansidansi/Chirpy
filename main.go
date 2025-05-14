@@ -1,7 +1,6 @@
 package main
 
 import (
-	"compress/gzip"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -43,8 +42,8 @@ func main() {
 	serveMux.Handle("/app/", apiCfg.middlewareMetricsInc(http.StripPrefix("/app/", http.FileServer(http.Dir(filePathRoot)))))
 	serveMux.HandleFunc("GET /admin/healthz", handleHealth)
 	serveMux.HandleFunc("GET /admin/metrics", apiCfg.handleGetMetrics)
-	serveMux.HandleFunc("POST /admin/reset", apiCfg.handleResetMetrics)
-	serveMux.HandleFunc("POST /api/validate_chirp", handleValidateChrip)
+	serveMux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
+	serveMux.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)
 	serveMux.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
 	serveMux.HandleFunc("DELETE /api/users", apiCfg.handlerDeleteAllUsers)
 
@@ -91,7 +90,7 @@ func (cfg *apiConfig) handleGetMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Write(fmt.Appendf(nil, message, cfg.fileserverHits.Load()))
 }
 
-func (cfg *apiConfig) handleResetMetrics(w http.ResponseWriter, _ *http.Request) {
+func (cfg *apiConfig) handlerReset(w http.ResponseWriter, _ *http.Request) {
 	if cfg.platform != "dev" {
 		w.WriteHeader(http.StatusForbidden)
 		return
@@ -102,6 +101,7 @@ func (cfg *apiConfig) handleResetMetrics(w http.ResponseWriter, _ *http.Request)
 	err := cfg.db.DeleteAllUsers(context.Background())
 	if err != nil {
 		respondWithError(w, 500, err)
+		return
 	}
 
 	w.WriteHeader(200)
@@ -109,41 +109,64 @@ func (cfg *apiConfig) handleResetMetrics(w http.ResponseWriter, _ *http.Request)
 	w.Write([]byte("Successfuly reset request counter."))
 }
 
-func handleValidateChrip(w http.ResponseWriter, r *http.Request) {
-	type chirp struct {
-		Body string `json:"body"`
+func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request) {
+	type Chirp struct {
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
 	}
-
-	w.Header().Add("Content-Type", "application/json")
 
 	decoder := json.NewDecoder(r.Body)
-	rChirp := chirp{}
-	if err := decoder.Decode(&rChirp); err != nil {
-		w.WriteHeader(500)
-		w.Write([]byte(`{"error": "Something went wrong"}`))
+	var chirp Chirp
+	if err := decoder.Decode(&chirp); err != nil {
+		respondWithError(w, http.StatusBadRequest, err)
 		return
 	}
 
-	if len(rChirp.Body) > 140 {
-		w.WriteHeader(400)
-		w.Write([]byte(`{"error": "Chirp is too long"}`))
+	body, err := validateChrip(chirp.Body)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err)
 		return
+	}
+	chirp.Body = body
+
+	createdChrip, err := cfg.db.CreateChirp(context.Background(), database.CreateChirpParams{
+		ID:        uuid.New(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Body:      chirp.Body,
+		UserID:    chirp.UserID,
+	})
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, err)
+		return
+	}
+
+	respondJson(w, http.StatusCreated, struct {
+		Id         uuid.UUID `json:"id"`
+		Created_at time.Time `json:"created_at"`
+		Updated_at time.Time `json:"updated_at"`
+		Body       string    `json:"body"`
+		User_id    uuid.UUID `json:"user_id"`
+	}{
+		Id:         createdChrip.ID,
+		Created_at: createdChrip.CreatedAt,
+		Updated_at: createdChrip.CreatedAt,
+		Body:       createdChrip.Body,
+		User_id:    createdChrip.UserID,
+	})
+}
+
+func validateChrip(body string) (string, error) {
+	if len(body) > 140 {
+		return "", fmt.Errorf("Chirp is too long")
 	}
 
 	for _, word := range []string{"kerfuffle", "sharbert", "fornax"} {
 		re := regexp.MustCompile(fmt.Sprintf(`(?i)%s`, word))
-		rChirp.Body = re.ReplaceAllString(rChirp.Body, "****")
+		body = re.ReplaceAllString(body, "****")
 	}
 
-	w.Header().Add("Content-Encoding", "gzip")
-	w.WriteHeader(200)
-
-	gzw := gzip.NewWriter(w)
-	defer gzw.Close()
-	_, err := gzw.Write(fmt.Appendf(nil, `{"cleaned_body": "%s"}`, rChirp.Body))
-	if err != nil {
-		fmt.Println(err)
-	}
+	return body, nil
 }
 
 func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -195,14 +218,13 @@ func respondWithError(w http.ResponseWriter, httpCode int, err error) {
 }
 
 func respondJson(w http.ResponseWriter, httpCode int, body any) {
-	w.Header().Add("Content-Type", "application/json")
-
 	data, err := json.Marshal(body)
 	if err != nil {
 		w.WriteHeader(500)
 		return
 	}
 
+	w.Header().Add("Content-Type", "application/json")
 	w.WriteHeader(httpCode)
 	w.Write(data)
 }
@@ -211,6 +233,7 @@ func (cfg *apiConfig) handlerDeleteAllUsers(w http.ResponseWriter, r *http.Reque
 	err := cfg.db.DeleteAllUsers(context.Background())
 	if err != nil {
 		respondWithError(w, 500, err)
+		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
