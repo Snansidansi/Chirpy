@@ -110,13 +110,13 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request) {
-	type Chirp struct {
+	type parameters struct {
 		Body   string    `json:"body"`
 		UserID uuid.UUID `json:"user_id"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
-	var chirp Chirp
+	var chirp parameters
 	if err := decoder.Decode(&chirp); err != nil {
 		respondWithError(w, http.StatusBadRequest, err)
 		return
@@ -141,19 +141,21 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	respondJson(w, http.StatusCreated, struct {
-		Id         uuid.UUID `json:"id"`
-		Created_at time.Time `json:"created_at"`
-		Updated_at time.Time `json:"updated_at"`
-		Body       string    `json:"body"`
-		User_id    uuid.UUID `json:"user_id"`
-	}{
+	respondJson(w, http.StatusCreated, Chirp{
 		Id:         createdChrip.ID,
 		Created_at: createdChrip.CreatedAt,
 		Updated_at: createdChrip.CreatedAt,
 		Body:       createdChrip.Body,
 		User_id:    createdChrip.UserID,
 	})
+}
+
+type Chirp struct {
+	Id         uuid.UUID `json:"id"`
+	Created_at time.Time `json:"created_at"`
+	Updated_at time.Time `json:"updated_at"`
+	Body       string    `json:"body"`
+	User_id    uuid.UUID `json:"user_id"`
 }
 
 func validateChrip(body string) (string, error) {
