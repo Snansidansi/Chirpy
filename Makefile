@@ -1,4 +1,4 @@
-DATABASE_URL := postgres://postgres:postgres@localhost:5433/chirpy
+DATABASE_URL := postgres://postgres:postgres@localhost:5432/chirpy
 GOOSE_PREFIX := goose -dir sql/schema
 APP_NAME := chirpy
 
